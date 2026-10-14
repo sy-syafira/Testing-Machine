@@ -13,8 +13,8 @@ TATA CARA PENGGUNAAN MESIN TEST BENDING ANTENNA
 7.	Untuk RESET, tekan dan tahan tombol OK selama 3–5 detik.
 
 PERHATIAN:
-•	Selalu pastikan antena berada pada posisi sudut 0° sebelum mesin dinyalakan dan sebelum pengujian dimulai kembali untuk mencegah kesalahan posisi dan kerusakan pada jig/antena.
-•	JAUHKAN BENDA APA PUN SAAT MESIN BEROPERASI!!!
+Selalu pastikan antena berada pada posisi sudut 0° sebelum mesin dinyalakan dan sebelum pengujian dimulai kembali untuk mencegah kesalahan posisi dan kerusakan pada jig/antena.
+JAUHKAN BENDA APA PUN SAAT MESIN BEROPERASI!!!
 
 # MESIN TEST EXTEND & RETRACT ANTENNA DAN MESIN TEST PRINTING BOX
 
@@ -31,7 +31,7 @@ DAN MESIN TEST PRINTING BOX
 7.	Jika terjadi kesalahan pengaturan, tekan RESET dan lakukan pengaturan kembali.
 
 PERHATIAN:
-•	Selalu pastikan antena berada pada posisi ZERO sebelum mesin dinyalakan dan sebelum pengujian dimulai kembali untuk mencegah kesalahan posisi dan kerusakan pada jig/antena.
-•	JAUHKAN BENDA APA PUN SAAT MESIN BEROPERASI!!!
+Selalu pastikan antena berada pada posisi ZERO sebelum mesin dinyalakan dan sebelum pengujian dimulai kembali untuk mencegah kesalahan posisi dan kerusakan pada jig/antena.
+JAUHKAN BENDA APA PUN SAAT MESIN BEROPERASI!!!
 
 
