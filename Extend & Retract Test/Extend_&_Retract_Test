@@ -1,0 +1,989 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <avr/wdt.h>
+
+// =====================================================
+// PIN ARDUINO NANO
+// =====================================================
+
+#define STEP_PIN        3
+#define DIR_PIN         2
+
+#define ENCODER_A       4
+#define ENCODER_B       5
+#define ENCODER_SW      6
+
+#define RESET_BUTTON    7
+
+// =====================================================
+// LCD I2C
+// =====================================================
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// =====================================================
+// ARAH MOTOR
+// =====================================================
+
+#define DIR_ZERO        LOW
+#define DIR_MAX         HIGH
+
+// =====================================================
+// KECEPATAN MINIMUM STEP
+// =====================================================
+
+#define MIN_STEP_DELAY_US  100
+
+// =====================================================
+// PENGALI GERAKAN ENCODER
+// =====================================================
+
+#define ENCODER_STEP_MULTIPLIER   250
+
+// =====================================================
+// STATE PROGRAM
+// =====================================================
+
+enum State
+{
+  FIND_ZERO,
+  FIND_MAX,
+  SET_CYCLE_TIME,
+  SET_TEST_HOUR,
+  SET_TEST_MINUTE,
+  READY,
+  RUNNING,
+  FINISHED
+};
+
+State state = FIND_ZERO;
+
+// =====================================================
+// POSISI MOTOR
+// =====================================================
+
+long currentPosition = 0;
+long maxPosition = 0;
+
+// =====================================================
+// SETTING CYCLE PER MINUTE
+// =====================================================
+
+// Default = 5 cycle per minute
+int cyclePerMinute = 5;
+
+// Batas CPM
+int minCPM = 1;
+int maxCPM = 60;
+
+// =====================================================
+// SETTING TEST TIME
+// =====================================================
+
+int testHours = 0;
+int testMinutes = 1;
+
+// =====================================================
+// ENCODER
+// =====================================================
+
+int lastEncoderA = HIGH;
+
+// =====================================================
+// BUTTON ENCODER
+// =====================================================
+
+unsigned long lastButtonTime = 0;
+const unsigned long buttonDelay = 250;
+
+// =====================================================
+// TIMER TEST
+// =====================================================
+
+unsigned long testStartTime = 0;
+unsigned long testDuration = 0;
+
+// =====================================================
+// CYCLE
+// =====================================================
+
+unsigned long cycleCount = 0;
+
+// =====================================================
+// RESET BUTTON
+// =====================================================
+
+unsigned long lastResetTime = 0;
+const unsigned long resetDelay = 300;
+
+// =====================================================
+// FUNCTION DECLARATION
+// =====================================================
+
+void stepMotor(unsigned long stepDelay);
+
+bool encoderButtonPressed();
+int readEncoder();
+
+void checkResetButton();
+void resetArduino();
+
+void findZeroProcess();
+void findMaxProcess();
+
+void setCycleTimeProcess();
+void setTestHourProcess();
+void setTestMinuteProcess();
+
+void readyProcess();
+void runProcess();
+void finishProcess();
+
+void moveToMax();
+void moveToZero();
+void moveToPosition(long targetPosition);
+
+void showReady();
+void showRunning();
+
+void printTwoDigits(int value);
+
+unsigned long calculateStepDelay();
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup()
+{
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+
+  digitalWrite(STEP_PIN, LOW);
+
+  pinMode(ENCODER_A, INPUT_PULLUP);
+  pinMode(ENCODER_B, INPUT_PULLUP);
+  pinMode(ENCODER_SW, INPUT_PULLUP);
+
+  pinMode(RESET_BUTTON, INPUT_PULLUP);
+
+  lcd.init();
+  lcd.backlight();
+
+  lastEncoderA = digitalRead(ENCODER_A);
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("ANTENNA TEST");
+
+  lcd.setCursor(0, 1);
+  lcd.print("FIND ZERO");
+
+  delay(1000);
+}
+
+// =====================================================
+// LOOP
+// =====================================================
+
+void loop()
+{
+  checkResetButton();
+
+  switch (state)
+  {
+    case FIND_ZERO:
+      findZeroProcess();
+      break;
+
+    case FIND_MAX:
+      findMaxProcess();
+      break;
+
+    case SET_CYCLE_TIME:
+      setCycleTimeProcess();
+      break;
+
+    case SET_TEST_HOUR:
+      setTestHourProcess();
+      break;
+
+    case SET_TEST_MINUTE:
+      setTestMinuteProcess();
+      break;
+
+    case READY:
+      readyProcess();
+      break;
+
+    case RUNNING:
+      runProcess();
+      break;
+
+    case FINISHED:
+      finishProcess();
+      break;
+  }
+}
+
+// =====================================================
+// STEP MOTOR
+// =====================================================
+
+void stepMotor(unsigned long stepDelay)
+{
+  checkResetButton();
+
+  digitalWrite(STEP_PIN, HIGH);
+  delayMicroseconds(stepDelay);
+
+  digitalWrite(STEP_PIN, LOW);
+  delayMicroseconds(stepDelay);
+}
+
+// =====================================================
+// HITUNG DELAY STEP BERDASARKAN CPM
+// =====================================================
+
+unsigned long calculateStepDelay()
+{
+  // ===================================================
+  // Waktu 1 cycle dalam microsecond
+  //
+  // 60 detik / CPM
+  // ===================================================
+
+  unsigned long cycleTimeUs =
+    60000000UL / cyclePerMinute;
+
+  // ===================================================
+  // Satu cycle terdiri dari:
+  //
+  // ZERO -> MAX
+  // MAX  -> ZERO
+  //
+  // Total step = maxPosition * 2
+  // ===================================================
+
+  unsigned long totalSteps =
+    (unsigned long)abs(maxPosition) * 2UL;
+
+  if (totalSteps == 0)
+  {
+    return 500;
+  }
+
+  // ===================================================
+  // Setiap step terdiri dari HIGH + LOW
+  // Jadi dikali 2
+  // ===================================================
+
+  unsigned long delayUs =
+    cycleTimeUs / (totalSteps * 2UL);
+
+  // ===================================================
+  // Batas minimum supaya motor tidak terlalu cepat
+  // ===================================================
+
+  if (delayUs < MIN_STEP_DELAY_US)
+  {
+    delayUs = MIN_STEP_DELAY_US;
+  }
+
+  return delayUs;
+}
+
+// =====================================================
+// RESET BUTTON
+// =====================================================
+
+void checkResetButton()
+{
+  if (digitalRead(RESET_BUTTON) == LOW)
+  {
+    delay(30);
+
+    if (digitalRead(RESET_BUTTON) == LOW)
+    {
+      lcd.clear();
+
+      lcd.setCursor(0, 0);
+      lcd.print("RESET");
+
+      lcd.setCursor(0, 1);
+      lcd.print("PLEASE WAIT");
+
+      delay(100);
+
+      resetArduino();
+    }
+  }
+}
+
+// =====================================================
+// RESET ARDUINO
+// =====================================================
+
+void resetArduino()
+{
+  wdt_enable(WDTO_15MS);
+
+  while (1)
+  {
+  }
+}
+
+// =====================================================
+// BUTTON ENCODER
+// =====================================================
+
+bool encoderButtonPressed()
+{
+  if (digitalRead(ENCODER_SW) == LOW)
+  {
+    if (millis() - lastButtonTime > buttonDelay)
+    {
+      lastButtonTime = millis();
+
+      while (digitalRead(ENCODER_SW) == LOW)
+      {
+        checkResetButton();
+        delay(5);
+      }
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// =====================================================
+// BACA ENCODER
+// =====================================================
+
+int readEncoder()
+{
+  int currentA = digitalRead(ENCODER_A);
+
+  int result = 0;
+
+  if (currentA != lastEncoderA)
+  {
+    lastEncoderA = currentA;
+
+    if (currentA == LOW)
+    {
+      if (digitalRead(ENCODER_B) == HIGH)
+      {
+        result = 1;
+      }
+      else
+      {
+        result = -1;
+      }
+    }
+  }
+
+  return result;
+}
+
+// =====================================================
+// FIND ZERO
+// =====================================================
+
+void findZeroProcess()
+{
+  int encoderMove = readEncoder();
+
+  if (encoderMove > 0)
+  {
+    digitalWrite(DIR_PIN, DIR_MAX);
+
+    for (int i = 0; i < ENCODER_STEP_MULTIPLIER; i++)
+    {
+      stepMotor(500);
+      currentPosition++;
+    }
+  }
+
+  else if (encoderMove < 0)
+  {
+    digitalWrite(DIR_PIN, DIR_ZERO);
+
+    for (int i = 0; i < ENCODER_STEP_MULTIPLIER; i++)
+    {
+      stepMotor(500);
+      currentPosition--;
+    }
+  }
+
+  lcd.setCursor(0, 0);
+  lcd.print("FIND ZERO       ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Lenght:");
+  lcd.print(currentPosition);
+  lcd.print("       ");
+
+  if (encoderButtonPressed())
+  {
+    currentPosition = 0;
+
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("ZERO SAVED");
+
+    lcd.setCursor(0, 1);
+    lcd.print("POS: 0");
+
+    delay(1000);
+
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("FIND MAX");
+
+    lcd.setCursor(0, 1);
+    lcd.print("Turn Encoder");
+
+    delay(500);
+
+    state = FIND_MAX;
+  }
+}
+
+// =====================================================
+// FIND MAX
+// =====================================================
+
+void findMaxProcess()
+{
+  int encoderMove = readEncoder();
+
+  if (encoderMove > 0)
+  {
+    digitalWrite(DIR_PIN, DIR_MAX);
+
+    for (int i = 0; i < ENCODER_STEP_MULTIPLIER; i++)
+    {
+      stepMotor(500);
+      currentPosition++;
+    }
+  }
+
+  else if (encoderMove < 0)
+  {
+    digitalWrite(DIR_PIN, DIR_ZERO);
+
+    for (int i = 0; i < ENCODER_STEP_MULTIPLIER; i++)
+    {
+      stepMotor(500);
+      currentPosition--;
+    }
+  }
+
+  lcd.setCursor(0, 0);
+  lcd.print("FIND MAX        ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("Lenght:");
+  lcd.print(currentPosition);
+  lcd.print("       ");
+
+  if (encoderButtonPressed())
+  {
+    maxPosition = currentPosition;
+
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("MAX SAVED");
+
+    lcd.setCursor(0, 1);
+    lcd.print("MAX:");
+    lcd.print(maxPosition);
+
+    delay(1000);
+
+    moveToZero();
+
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("SET CYCLE/MIN");
+
+    lcd.setCursor(0, 1);
+    lcd.print(cyclePerMinute);
+    lcd.print(" CPM");
+
+    delay(500);
+
+    state = SET_CYCLE_TIME;
+  }
+}
+
+// =====================================================
+// SET CYCLE PER MINUTE
+// =====================================================
+
+void setCycleTimeProcess()
+{
+  int encoderMove = readEncoder();
+
+  if (encoderMove > 0)
+  {
+    cyclePerMinute++;
+
+    if (cyclePerMinute > maxCPM)
+    {
+      cyclePerMinute = maxCPM;
+    }
+  }
+
+  else if (encoderMove < 0)
+  {
+    cyclePerMinute--;
+
+    if (cyclePerMinute < minCPM)
+    {
+      cyclePerMinute = minCPM;
+    }
+  }
+
+  lcd.setCursor(0, 0);
+  lcd.print("CYCLE / MIN     ");
+
+  lcd.setCursor(0, 1);
+  lcd.print(cyclePerMinute);
+  lcd.print(" CPM       ");
+
+  if (encoderButtonPressed())
+  {
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("SET TEST HOUR");
+
+    lcd.setCursor(0, 1);
+    lcd.print("HOUR:");
+    printTwoDigits(testHours);
+
+    delay(500);
+
+    state = SET_TEST_HOUR;
+  }
+}
+
+// =====================================================
+// SET TEST HOUR
+// =====================================================
+
+void setTestHourProcess()
+{
+  int encoderMove = readEncoder();
+
+  if (encoderMove > 0)
+  {
+    testHours++;
+
+    if (testHours > 99)
+    {
+      testHours = 99;
+    }
+  }
+
+  else if (encoderMove < 0)
+  {
+    if (testHours > 0)
+    {
+      testHours--;
+    }
+  }
+
+  lcd.setCursor(0, 0);
+  lcd.print("SET TEST HOUR   ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("HOUR:");
+  printTwoDigits(testHours);
+  lcd.print("        ");
+
+  if (encoderButtonPressed())
+  {
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("SET TEST MIN");
+
+    lcd.setCursor(0, 1);
+    lcd.print("MIN:");
+    printTwoDigits(testMinutes);
+
+    delay(500);
+
+    state = SET_TEST_MINUTE;
+  }
+}
+
+// =====================================================
+// SET TEST MINUTE
+// =====================================================
+
+void setTestMinuteProcess()
+{
+  int encoderMove = readEncoder();
+
+  if (encoderMove > 0)
+  {
+    testMinutes++;
+
+    if (testMinutes > 59)
+    {
+      testMinutes = 59;
+    }
+  }
+
+  else if (encoderMove < 0)
+  {
+    if (testMinutes > 0)
+    {
+      testMinutes--;
+    }
+  }
+
+  lcd.setCursor(0, 0);
+  lcd.print("SET TEST MIN    ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("MIN:");
+  printTwoDigits(testMinutes);
+  lcd.print("        ");
+
+  if (encoderButtonPressed())
+  {
+    lcd.clear();
+
+    showReady();
+
+    delay(500);
+
+    state = READY;
+  }
+}
+
+// =====================================================
+// READY
+// =====================================================
+
+void readyProcess()
+{
+  lcd.setCursor(0, 0);
+  lcd.print("READY           ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("PRESS START     ");
+
+  if (encoderButtonPressed())
+  {
+    moveToZero();
+
+    cycleCount = 0;
+
+    testDuration =
+      ((unsigned long)testHours * 60UL * 60UL * 1000UL) +
+      ((unsigned long)testMinutes * 60UL * 1000UL);
+
+    testStartTime = millis();
+
+    lcd.clear();
+
+    lcd.setCursor(0, 0);
+    lcd.print("TEST START");
+
+    delay(1000);
+
+    state = RUNNING;
+  }
+}
+
+// =====================================================
+// RUNNING
+// =====================================================
+
+void runProcess()
+{
+  // ===================================================
+  // CEK WAKTU TEST
+  // ===================================================
+
+  if (millis() - testStartTime >= testDuration)
+  {
+    moveToZero();
+
+    state = FINISHED;
+
+    return;
+  }
+
+  // ===================================================
+  // ZERO -> MAX
+  // ===================================================
+
+  moveToMax();
+
+  if (millis() - testStartTime >= testDuration)
+  {
+    moveToZero();
+
+    state = FINISHED;
+
+    return;
+  }
+
+  // ===================================================
+  // MAX -> ZERO
+  // ===================================================
+
+  moveToZero();
+
+  // ===================================================
+  // SATU CYCLE SELESAI
+  // ===================================================
+
+  cycleCount++;
+
+  showRunning();
+}
+
+// =====================================================
+// MOVE TO MAX
+// =====================================================
+
+void moveToMax()
+{
+  unsigned long stepDelay =
+    calculateStepDelay();
+
+  if (maxPosition > currentPosition)
+  {
+    digitalWrite(DIR_PIN, DIR_MAX);
+
+    while (currentPosition < maxPosition)
+    {
+      stepMotor(stepDelay);
+      currentPosition++;
+    }
+  }
+
+  else if (maxPosition < currentPosition)
+  {
+    digitalWrite(DIR_PIN, DIR_ZERO);
+
+    while (currentPosition > maxPosition)
+    {
+      stepMotor(stepDelay);
+      currentPosition--;
+    }
+  }
+}
+
+// =====================================================
+// MOVE TO ZERO
+// =====================================================
+
+void moveToZero()
+{
+  unsigned long stepDelay =
+    calculateStepDelay();
+
+  if (currentPosition > 0)
+  {
+    digitalWrite(DIR_PIN, DIR_ZERO);
+
+    while (currentPosition > 0)
+    {
+      stepMotor(stepDelay);
+      currentPosition--;
+    }
+  }
+
+  else if (currentPosition < 0)
+  {
+    digitalWrite(DIR_PIN, DIR_MAX);
+
+    while (currentPosition < 0)
+    {
+      stepMotor(stepDelay);
+      currentPosition++;
+    }
+  }
+
+  currentPosition = 0;
+}
+
+// =====================================================
+// MOVE TO POSITION
+// =====================================================
+
+void moveToPosition(long targetPosition)
+{
+  unsigned long stepDelay =
+    calculateStepDelay();
+
+  if (targetPosition > currentPosition)
+  {
+    digitalWrite(DIR_PIN, DIR_MAX);
+
+    while (currentPosition < targetPosition)
+    {
+      stepMotor(stepDelay);
+      currentPosition++;
+    }
+  }
+
+  else if (targetPosition < currentPosition)
+  {
+    digitalWrite(DIR_PIN, DIR_ZERO);
+
+    while (currentPosition > targetPosition)
+    {
+      stepMotor(stepDelay);
+      currentPosition--;
+    }
+  }
+}
+
+// =====================================================
+// DISPLAY READY
+// =====================================================
+
+void showReady()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("READY");
+
+  lcd.setCursor(0, 1);
+  lcd.print("MAX:");
+  lcd.print(maxPosition);
+}
+
+// =====================================================
+// DISPLAY RUNNING
+// =====================================================
+
+void showRunning()
+{
+  unsigned long elapsed =
+    millis() - testStartTime;
+
+  unsigned long remaining = 0;
+
+  if (elapsed < testDuration)
+  {
+    remaining = testDuration - elapsed;
+  }
+
+  unsigned long totalSeconds =
+    remaining / 1000UL;
+
+  unsigned int hours =
+    totalSeconds / 3600UL;
+
+  unsigned int minutes =
+    (totalSeconds % 3600UL) / 60UL;
+
+  unsigned int seconds =
+    totalSeconds % 60UL;
+
+  // ===================================================
+  // BARIS 1
+  // ===================================================
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+
+  lcd.print("TIME ");
+
+  printTwoDigits(hours);
+
+  lcd.print(":");
+
+  printTwoDigits(minutes);
+
+  lcd.print(":");
+
+  printTwoDigits(seconds);
+
+  // ===================================================
+  // BARIS 2
+  // ===================================================
+
+  lcd.setCursor(0, 1);
+  lcd.print("CYCLE:");
+  lcd.print(cycleCount);
+  lcd.print("       ");
+}
+
+// =====================================================
+// PRINT 2 DIGITS
+// =====================================================
+
+void printTwoDigits(int value)
+{
+  if (value < 10)
+  {
+    lcd.print("0");
+  }
+
+  lcd.print(value);
+}
+
+// =====================================================
+// FINISHED
+// =====================================================
+
+void finishProcess()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("TEST FINISHED");
+
+  lcd.setCursor(0, 1);
+  lcd.print("C:");
+  lcd.print(cycleCount);
+
+  delay(3000);
+
+  // ===================================================
+  // KEMBALI KE MODE AWAL
+  // ===================================================
+
+  currentPosition = 0;
+
+  maxPosition = 0;
+
+  cycleCount = 0;
+
+  testStartTime = 0;
+  testDuration = 0;
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("ANTENNA TEST");
+
+  lcd.setCursor(0, 1);
+  lcd.print("FIND ZERO");
+
+  delay(1000);
+
+  state = FIND_ZERO;
+}
+
