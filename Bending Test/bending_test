@@ -1,0 +1,1096 @@
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+
+// =====================================================
+// PIN
+// =====================================================
+
+#define STEP_PIN       5
+#define DIR_PIN        6
+#define ENABLE_PIN     7
+
+#define BUTTON_PLUS    8
+#define BUTTON_MINUS   9
+#define BUTTON_OK      10
+
+// =====================================================
+// LCD
+// =====================================================
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// =====================================================
+// MOTOR
+// =====================================================
+
+// Motor stepper
+const long MOTOR_STEPS_PER_REV = 265;
+
+// Setting microstep TB6600
+const int MICROSTEP = 8;
+
+// =====================================================
+// KALIBRASI SUDUT
+// =====================================================
+//
+// Sebelumnya:
+// 180° -> bergerak sekitar 90°
+// 360° -> bergerak sekitar 180°
+//
+// Maka step dikalikan 2.
+//
+// Jika nanti sudut sudah sesuai,
+// CALIBRATION_FACTOR bisa diubah menjadi 1.
+//
+
+const int CALIBRATION_FACTOR = 2;
+
+const long STEPS_PER_REV =
+  MOTOR_STEPS_PER_REV * MICROSTEP * CALIBRATION_FACTOR;
+
+// =====================================================
+// SETTING DEFAULT
+// =====================================================
+
+int angleMode = 180;
+
+int cyclesPerMinute = 10;
+
+int testHours = 0;
+int testMinutes = 1;
+
+// =====================================================
+// VARIABEL TEST
+// =====================================================
+
+long targetSteps = 0;
+
+unsigned long completedCycles = 0;
+
+unsigned long testStartTime = 0;
+
+unsigned long testDuration = 0;
+
+bool testing = false;
+
+// =====================================================
+// MENU
+// =====================================================
+
+enum MenuState
+{
+  START_SCREEN,
+  SELECT_ANGLE,
+  SET_CPM,
+  SET_HOUR,
+  SET_MINUTE,
+  CONFIRM_SETTING,
+  READY_START,
+  RUNNING,
+  FINISHED
+};
+
+MenuState currentMenu = START_SCREEN;
+
+// =====================================================
+// BUTTON
+// =====================================================
+
+unsigned long lastButtonPress = 0;
+
+const unsigned long debounceTime = 180;
+
+// Lama tekan OK untuk RESET
+const unsigned long LONG_PRESS_TIME = 2000;
+
+// =====================================================
+// SETUP
+// =====================================================
+
+void setup()
+{
+  // Motor
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+  pinMode(ENABLE_PIN, OUTPUT);
+
+  // Button
+  pinMode(BUTTON_PLUS, INPUT_PULLUP);
+  pinMode(BUTTON_MINUS, INPUT_PULLUP);
+  pinMode(BUTTON_OK, INPUT_PULLUP);
+
+  // Motor awal
+  digitalWrite(ENABLE_PIN, LOW);
+  digitalWrite(STEP_PIN, LOW);
+  digitalWrite(DIR_PIN, LOW);
+
+  // LCD
+  lcd.init();
+  lcd.backlight();
+
+  // Tampilan awal
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("  ");
+
+  lcd.setCursor(0, 1);
+  lcd.print("   Press OK     ");
+
+  delay(1500);
+
+  showStartScreen();
+}
+
+// =====================================================
+// LOOP
+// =====================================================
+
+void loop()
+{
+  switch (currentMenu)
+  {
+    case START_SCREEN:
+      handleStartScreen();
+      break;
+
+    case SELECT_ANGLE:
+      handleSelectAngle();
+      break;
+
+    case SET_CPM:
+      handleSetCPM();
+      break;
+
+    case SET_HOUR:
+      handleSetHour();
+      break;
+
+    case SET_MINUTE:
+      handleSetMinute();
+      break;
+
+    case CONFIRM_SETTING:
+      handleConfirm();
+      break;
+
+    case READY_START:
+      handleReadyStart();
+      break;
+
+    case RUNNING:
+      runTest();
+      break;
+
+    case FINISHED:
+      handleFinished();
+      break;
+  }
+}
+
+// =====================================================
+// START SCREEN
+// =====================================================
+
+void showStartScreen()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("ANTENNA TESTER");
+
+  lcd.setCursor(0, 1);
+  lcd.print("OK=SETTING");
+}
+
+// =====================================================
+// HANDLE START SCREEN
+// =====================================================
+
+void handleStartScreen()
+{
+  if (buttonOK())
+  {
+    currentMenu = SELECT_ANGLE;
+
+    showSelectAngle();
+  }
+}
+
+// =====================================================
+// SELECT ANGLE
+// =====================================================
+
+void showSelectAngle()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("SELECT ANGLE");
+
+  lcd.setCursor(0, 1);
+
+  if (angleMode == 180)
+  {
+    lcd.print(">180deg");
+  }
+  else
+  {
+    lcd.print(">360deg");
+  }
+}
+
+// =====================================================
+// HANDLE SELECT ANGLE
+// =====================================================
+
+void handleSelectAngle()
+{
+  if (buttonPlus())
+  {
+    angleMode = 360;
+
+    showSelectAngle();
+  }
+
+  if (buttonMinus())
+  {
+    angleMode = 180;
+
+    showSelectAngle();
+  }
+
+  if (buttonOK())
+  {
+    currentMenu = SET_CPM;
+
+    showSetCPM();
+  }
+}
+
+// =====================================================
+// SET CPM
+// =====================================================
+
+void showSetCPM()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("SET CPM");
+
+  lcd.setCursor(0, 1);
+  lcd.print(cyclesPerMinute);
+  lcd.print(" CPM");
+}
+
+// =====================================================
+// HANDLE CPM
+// =====================================================
+
+void handleSetCPM()
+{
+  if (buttonPlus())
+  {
+    cyclesPerMinute++;
+
+    if (cyclesPerMinute > 60)
+    {
+      cyclesPerMinute = 60;
+    }
+
+    showSetCPM();
+  }
+
+  if (buttonMinus())
+  {
+    cyclesPerMinute--;
+
+    if (cyclesPerMinute < 1)
+    {
+      cyclesPerMinute = 1;
+    }
+
+    showSetCPM();
+  }
+
+  if (buttonOK())
+  {
+    currentMenu = SET_HOUR;
+
+    showSetHour();
+  }
+}
+
+// =====================================================
+// SET HOUR
+// =====================================================
+
+void showSetHour()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("SET HOURS");
+
+  lcd.setCursor(0, 1);
+
+  lcd.print(testHours);
+  lcd.print(" HOUR");
+}
+
+// =====================================================
+// HANDLE HOUR
+// =====================================================
+
+void handleSetHour()
+{
+  if (buttonPlus())
+  {
+    testHours++;
+
+    if (testHours > 99)
+    {
+      testHours = 99;
+    }
+
+    showSetHour();
+  }
+
+  if (buttonMinus())
+  {
+    testHours--;
+
+    if (testHours < 0)
+    {
+      testHours = 0;
+    }
+
+    showSetHour();
+  }
+
+  if (buttonOK())
+  {
+    currentMenu = SET_MINUTE;
+
+    showSetMinute();
+  }
+}
+
+// =====================================================
+// SET MINUTE
+// =====================================================
+
+void showSetMinute()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("SET MINUTES");
+
+  lcd.setCursor(0, 1);
+
+  lcd.print(testMinutes);
+  lcd.print(" MIN");
+}
+
+// =====================================================
+// HANDLE MINUTE
+// =====================================================
+
+void handleSetMinute()
+{
+  if (buttonPlus())
+  {
+    testMinutes++;
+
+    if (testMinutes > 59)
+    {
+      testMinutes = 59;
+    }
+
+    showSetMinute();
+  }
+
+  if (buttonMinus())
+  {
+    testMinutes--;
+
+    if (testMinutes < 0)
+    {
+      testMinutes = 0;
+    }
+
+    showSetMinute();
+  }
+
+  if (buttonOK())
+  {
+    // Tidak boleh 0 jam dan 0 menit
+    if (testHours == 0 && testMinutes == 0)
+    {
+      lcd.clear();
+
+      lcd.setCursor(0, 0);
+      lcd.print("TIME INVALID");
+
+      lcd.setCursor(0, 1);
+      lcd.print("SET TIME AGAIN");
+
+      delay(1500);
+
+      showSetMinute();
+
+      return;
+    }
+
+    currentMenu = CONFIRM_SETTING;
+
+    showConfirm();
+  }
+}
+
+// =====================================================
+// CONFIRM SETTING
+// =====================================================
+
+void showConfirm()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+
+  lcd.print(angleMode);
+  lcd.print("deg ");
+
+  lcd.print(cyclesPerMinute);
+  lcd.print("CPM");
+
+  lcd.setCursor(0, 1);
+
+  if (testHours < 10)
+  {
+    lcd.print("0");
+  }
+
+  lcd.print(testHours);
+
+  lcd.print(":");
+
+  if (testMinutes < 10)
+  {
+    lcd.print("0");
+  }
+
+  lcd.print(testMinutes);
+
+  lcd.print(" OK?");
+}
+
+// =====================================================
+// HANDLE CONFIRM
+// =====================================================
+
+void handleConfirm()
+{
+  if (buttonPlus())
+  {
+    currentMenu = SELECT_ANGLE;
+
+    showSelectAngle();
+  }
+
+  if (buttonMinus())
+  {
+    currentMenu = SELECT_ANGLE;
+
+    showSelectAngle();
+  }
+
+  if (buttonOK())
+  {
+    currentMenu = READY_START;
+
+    showReadyStart();
+  }
+}
+
+// =====================================================
+// READY START
+// =====================================================
+
+void showReadyStart()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("READY ");
+
+  lcd.print(angleMode);
+  lcd.print("deg");
+
+  lcd.setCursor(0, 1);
+  lcd.print("OK = START");
+}
+
+// =====================================================
+// HANDLE READY
+// =====================================================
+
+void handleReadyStart()
+{
+  if (buttonOK())
+  {
+    startTest();
+  }
+}
+
+// =====================================================
+// START TEST
+// =====================================================
+
+void startTest()
+{
+  completedCycles = 0;
+
+  testing = true;
+
+  // =================================================
+  // HITUNG TARGET STEP
+  // =================================================
+  //
+  // 180° = setengah putaran
+  // 360° = satu putaran
+  //
+
+  if (angleMode == 180)
+  {
+    targetSteps = STEPS_PER_REV / 2;
+  }
+  else
+  {
+    targetSteps = STEPS_PER_REV;
+  }
+
+  // Hitung durasi
+  testDuration =
+    ((unsigned long)testHours * 3600000UL) +
+    ((unsigned long)testMinutes * 60000UL);
+
+  testStartTime = millis();
+
+  currentMenu = RUNNING;
+
+  showRunning();
+}
+
+// =====================================================
+// RUN TEST
+// =====================================================
+
+void runTest()
+{
+  // =================================================
+  // CEK LONG PRESS OK TERLEBIH DAHULU
+  // =================================================
+
+  checkLongPressReset();
+
+  // Jika reset terjadi
+  if (!testing)
+  {
+    return;
+  }
+
+  // =================================================
+  // CEK WAKTU
+  // =================================================
+
+  unsigned long elapsedTime =
+    millis() - testStartTime;
+
+  if (elapsedTime >= testDuration)
+  {
+    finishTest();
+
+    return;
+  }
+
+  // =================================================
+  // GERAK MAJU
+  // =================================================
+
+  moveMotor(targetSteps, true);
+
+  // Cek waktu
+  if ((millis() - testStartTime) >= testDuration)
+  {
+    finishTest();
+
+    return;
+  }
+
+  // Cek reset setelah gerakan maju
+  checkLongPressReset();
+
+  if (!testing)
+  {
+    return;
+  }
+
+  // =================================================
+  // GERAK MUNDUR
+  // =================================================
+
+  moveMotor(targetSteps, false);
+
+  // =================================================
+  // 1 CYCLE SELESAI
+  // =================================================
+
+  if (testing)
+  {
+    completedCycles++;
+
+    updateRunningDisplay();
+  }
+}
+
+// =====================================================
+// MOVE MOTOR
+// =====================================================
+
+void moveMotor(long steps, bool direction)
+{
+  digitalWrite(DIR_PIN, direction ? HIGH : LOW);
+
+  // =================================================
+  // CPM
+  // =================================================
+  //
+  // 1 cycle:
+  // MAJU + MUNDUR
+  //
+  // total step per menit:
+  //
+  // targetSteps x 2 x CPM
+  //
+
+  float totalStepsPerMinute =
+    (float)steps * 2.0 * cyclesPerMinute;
+
+  float stepsPerSecond =
+    totalStepsPerMinute / 60.0;
+
+  unsigned long stepDelay =
+    (unsigned long)(1000000.0 / stepsPerSecond);
+
+  // Safety minimum
+  if (stepDelay < 100)
+  {
+    stepDelay = 100;
+  }
+
+  // =================================================
+  // GERAK
+  // =================================================
+
+  for (long i = 0; i < steps; i++)
+  {
+    // Cek tombol OK untuk long press
+    if (digitalRead(BUTTON_OK) == LOW)
+    {
+      static unsigned long motorButtonStart = 0;
+
+      if (motorButtonStart == 0)
+      {
+        motorButtonStart = millis();
+      }
+
+      if (millis() - motorButtonStart >= LONG_PRESS_TIME)
+      {
+        motorButtonStart = 0;
+
+        resetSystem();
+
+        return;
+      }
+    }
+    else
+    {
+      // Tombol sudah dilepas
+      // reset timer long press
+      static unsigned long motorButtonStart = 0;
+      motorButtonStart = 0;
+    }
+
+    digitalWrite(STEP_PIN, HIGH);
+
+    delayMicroseconds(stepDelay / 2);
+
+    digitalWrite(STEP_PIN, LOW);
+
+    delayMicroseconds(stepDelay / 2);
+  }
+}
+
+// =====================================================
+// RUNNING DISPLAY
+// =====================================================
+
+void showRunning()
+{
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+
+  lcd.print(angleMode);
+  lcd.print("deg ");
+
+  lcd.print("C:");
+  lcd.print(completedCycles);
+
+  updateRunningDisplay();
+}
+
+// =====================================================
+// UPDATE RUNNING DISPLAY
+// =====================================================
+
+void updateRunningDisplay()
+{
+  unsigned long elapsedTime =
+    millis() - testStartTime;
+
+  unsigned long remainingTime = 0;
+
+  if (elapsedTime < testDuration)
+  {
+    remainingTime =
+      testDuration - elapsedTime;
+  }
+
+  unsigned long totalSeconds =
+    remainingTime / 1000UL;
+
+  unsigned int hours =
+    totalSeconds / 3600UL;
+
+  unsigned int minutes =
+    (totalSeconds % 3600UL) / 60UL;
+
+  unsigned int seconds =
+    totalSeconds % 60UL;
+
+  // =================================================
+  // BARIS 1
+  // =================================================
+
+  lcd.setCursor(0, 0);
+
+  lcd.print(angleMode);
+  lcd.print("deg ");
+
+  lcd.print("Cycle:");
+  lcd.print(completedCycles);
+
+  lcd.print("    ");
+
+  // =================================================
+  // BARIS 2
+  // =================================================
+
+  lcd.setCursor(0, 1);
+
+  lcd.print("Time: ");
+
+  if (hours < 10)
+  {
+    lcd.print("0");
+  }
+
+  lcd.print(hours);
+
+  lcd.print(":");
+
+  if (minutes < 10)
+  {
+    lcd.print("0");
+  }
+
+  lcd.print(minutes);
+
+  lcd.print(":");
+
+  if (seconds < 10)
+  {
+    lcd.print("0");
+  }
+
+  lcd.print(seconds);
+}
+
+// =====================================================
+// FINISH TEST
+// =====================================================
+
+void finishTest()
+{
+  testing = false;
+
+  // Motor berhenti
+  digitalWrite(STEP_PIN, LOW);
+
+  currentMenu = FINISHED;
+
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("TEST FINISHED");
+
+  lcd.setCursor(0, 1);
+  lcd.print("CYCLE:");
+
+  lcd.print(completedCycles);
+}
+
+// =====================================================
+// FINISHED
+// =====================================================
+
+void handleFinished()
+{
+  if (buttonOK())
+  {
+    completedCycles = 0;
+
+    currentMenu = START_SCREEN;
+
+    showStartScreen();
+  }
+}
+
+// =====================================================
+// RESET SYSTEM
+// =====================================================
+//
+// OK ditekan >= 2 detik
+// akan mengembalikan sistem ke kondisi awal.
+//
+
+void resetSystem()
+{
+  // Hentikan motor
+  digitalWrite(STEP_PIN, LOW);
+
+  testing = false;
+
+  // Reset counter
+  completedCycles = 0;
+
+  targetSteps = 0;
+
+  // Reset waktu
+  testStartTime = 0;
+  testDuration = 0;
+
+  // Reset setting
+  angleMode = 180;
+
+  cyclesPerMinute = 10;
+
+  testHours = 0;
+  testMinutes = 1;
+
+  // Kembali ke menu awal
+  currentMenu = START_SCREEN;
+
+  // Tampilkan reset
+  lcd.clear();
+
+  lcd.setCursor(0, 0);
+  lcd.print("SYSTEM RESET");
+
+  lcd.setCursor(0, 1);
+  lcd.print("PLEASE WAIT...");
+
+  delay(1000);
+
+  showStartScreen();
+}
+
+// =====================================================
+// CHECK LONG PRESS RESET
+// =====================================================
+
+void checkLongPressReset()
+{
+  static bool okWasPressed = false;
+
+  static unsigned long okPressStart = 0;
+
+  bool okPressed =
+    (digitalRead(BUTTON_OK) == LOW);
+
+  // =================================================
+  // MULAI MENEKAN
+  // =================================================
+
+  if (okPressed && !okWasPressed)
+  {
+    okWasPressed = true;
+
+    okPressStart = millis();
+  }
+
+  // =================================================
+  // MASIH DITEKAN
+  // =================================================
+
+  if (okPressed && okWasPressed)
+  {
+    if (millis() - okPressStart >= LONG_PRESS_TIME)
+    {
+      okWasPressed = false;
+
+      resetSystem();
+
+      // Tunggu tombol dilepas
+      while (digitalRead(BUTTON_OK) == LOW)
+      {
+        delay(10);
+      }
+
+      return;
+    }
+  }
+
+  // =================================================
+  // DILEPAS
+  // =================================================
+
+  if (!okPressed)
+  {
+    okWasPressed = false;
+
+    okPressStart = 0;
+  }
+}
+
+// =====================================================
+// BUTTON PLUS
+// =====================================================
+
+bool buttonPlus()
+{
+  if (digitalRead(BUTTON_PLUS) == LOW)
+  {
+    if (millis() - lastButtonPress > debounceTime)
+    {
+      lastButtonPress = millis();
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// =====================================================
+// BUTTON MINUS
+// =====================================================
+
+bool buttonMinus()
+{
+  if (digitalRead(BUTTON_MINUS) == LOW)
+  {
+    if (millis() - lastButtonPress > debounceTime)
+    {
+      lastButtonPress = millis();
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// =====================================================
+// BUTTON OK
+// =====================================================
+//
+// Tekan singkat:
+//     -> OK
+//
+// Tekan >= 2 detik:
+//     -> RESET
+//
+
+bool buttonOK()
+{
+  static bool buttonWasPressed = false;
+
+  static unsigned long pressStartTime = 0;
+
+  bool pressed =
+    (digitalRead(BUTTON_OK) == LOW);
+
+  // =================================================
+  // TOMBOL BARU DITEKAN
+  // =================================================
+
+  if (pressed && !buttonWasPressed)
+  {
+    buttonWasPressed = true;
+
+    pressStartTime = millis();
+  }
+
+  // =================================================
+  // TOMBOL MASIH DITEKAN
+  // =================================================
+
+  if (pressed && buttonWasPressed)
+  {
+    // Long press
+    if (millis() - pressStartTime >= LONG_PRESS_TIME)
+    {
+      buttonWasPressed = false;
+
+      resetSystem();
+
+      // Tunggu tombol dilepas
+      while (digitalRead(BUTTON_OK) == LOW)
+      {
+        delay(10);
+      }
+
+      return false;
+    }
+  }
+
+  // =================================================
+  // TOMBOL DILEPAS
+  // =================================================
+
+  if (!pressed && buttonWasPressed)
+  {
+    unsigned long pressDuration =
+      millis() - pressStartTime;
+
+    buttonWasPressed = false;
+
+    // Tekan singkat = OK
+    if (pressDuration < LONG_PRESS_TIME)
+    {
+      if (millis() - lastButtonPress > debounceTime)
+      {
+        lastButtonPress = millis();
+
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
