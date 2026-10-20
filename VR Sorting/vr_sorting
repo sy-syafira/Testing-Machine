@@ -1,0 +1,288 @@
+
+/*
+  JIG SORTING VR 100K - ARDUINO NANO
+
+  DATA 1 : Resistansi total VR (Pin 1 - Pin 3)
+  DATA 2 : Estimasi resistansi wiper (Pin 2 - Pin 3)
+  RASIO  : Data 2 / Data 1 * 100%
+
+  RASIO <= 28% : NG (LED MERAH)
+  RASIO >  28% : OK (LED HIJAU)
+
+  Setelah hasil keluar, tunggu 3 detik.
+  LED mati dan sistem siap memeriksa VR berikutnya.
+
+  WIRING:
+  A1 = Titik resistor referensi 10k dan ujung VR
+  A0 = Wiper VR (pin 2)
+  VR pin 3 = GND
+  D5 = Tombol ke GND
+  D8 = LED hijau melalui resistor 220-330 ohm
+  D9 = LED merah melalui resistor 220-330 ohm
+
+  Kapasitor 0.1uF:
+  A1 ke GND
+  A0 ke GND
+*/
+
+const byte PIN_DATA1  = A1;
+const byte PIN_WIPER  = A0;
+const byte PIN_BUTTON = 5;
+const byte LED_OK     = 8;
+const byte LED_NG     = 9;
+
+const float R_REFERENSI = 10000.0;
+const float BATAS_RATIO = 28.0;
+const float VCC = 5.0;
+const float ADC_MAX = 1023.0;
+
+const byte JUMLAH_SAMPLE = 8;
+
+// Waktu pergantian VR setelah hasil keluar
+const unsigned long WAKTU_GANTI_VR = 3000;
+
+enum Status {
+  BACA_DATA1,
+  BACA_DATA2,
+  TAMPILKAN_HASIL
+};
+
+Status status = BACA_DATA1;
+
+bool tombolSebelumnya = HIGH;
+bool statusTombolStabil = HIGH;
+unsigned long waktuDebounce = 0;
+unsigned long waktuHasilSelesai = 0;
+
+const unsigned long DEBOUNCE_MS = 25;
+
+float data1Ohm = 0;
+float data2Ohm = 0;
+float rasio = 0;
+
+// --------------------------------------------------
+// BACA ADC DENGAN BEBERAPA SAMPEL
+// --------------------------------------------------
+int bacaADC(byte pin) {
+  analogRead(pin);  // Buang pembacaan pertama kanal
+
+  unsigned long total = 0;
+
+  for (byte i = 0; i < JUMLAH_SAMPLE; i++) {
+    total += analogRead(pin);
+  }
+
+  return (int)(total / JUMLAH_SAMPLE);
+}
+
+// --------------------------------------------------
+// DETEKSI TOMBOL DITEKAN
+// --------------------------------------------------
+bool tombolDitekan() {
+  bool pembacaan = digitalRead(PIN_BUTTON);
+
+  if (pembacaan != tombolSebelumnya) {
+    tombolSebelumnya = pembacaan;
+    waktuDebounce = millis();
+  }
+
+  if (millis() - waktuDebounce >= DEBOUNCE_MS) {
+    if (pembacaan != statusTombolStabil) {
+      statusTombolStabil = pembacaan;
+
+      if (statusTombolStabil == LOW) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+// --------------------------------------------------
+// MATIKAN LED
+// --------------------------------------------------
+void matikanLED() {
+  digitalWrite(LED_OK, LOW);
+  digitalWrite(LED_NG, LOW);
+}
+
+// --------------------------------------------------
+// DATA 1: RESISTANSI TOTAL VR
+//
+// 5V -- R referensi -- A1 -- VR -- GND
+//
+// R_VR = R_REF * V_A1 / (VCC - V_A1)
+// --------------------------------------------------
+float bacaData1() {
+  int adc = bacaADC(PIN_DATA1);
+  float tegangan = adc * VCC / ADC_MAX;
+
+  if (tegangan <= 0.01 || tegangan >= VCC - 0.01) {
+    return -1.0;
+  }
+
+  return R_REFERENSI * tegangan / (VCC - tegangan);
+}
+
+// --------------------------------------------------
+// DATA 2: ESTIMASI RESISTANSI WIPER KE GND
+//
+// Mengasumsikan VR dipasang sebagai pembagi tegangan
+// dengan lintasan resistif dari A1 menuju GND.
+// --------------------------------------------------
+float bacaData2(float resistansiTotal) {
+  int adcTotal = bacaADC(PIN_DATA1);
+  int adcWiper = bacaADC(PIN_WIPER);
+
+  if (adcTotal <= 0) {
+    return -1.0;
+  }
+
+  float rasioTegangan =
+      (float)adcWiper / (float)adcTotal;
+
+  if (rasioTegangan < 0.0 || rasioTegangan > 1.05) {
+    return -1.0;
+  }
+
+  return resistansiTotal * rasioTegangan;
+}
+
+// --------------------------------------------------
+// SETUP
+// --------------------------------------------------
+void setup() {
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
+  pinMode(LED_OK, OUTPUT);
+  pinMode(LED_NG, OUTPUT);
+
+  matikanLED();
+
+  Serial.begin(9600);
+
+  Serial.println();
+  Serial.println(F("===================================="));
+  Serial.println(F("       JIG SORTING VR 100K"));
+  Serial.println(F("===================================="));
+  Serial.println(F("Pasang VR pada jig."));
+  Serial.println(F("Tekan tombol untuk membaca Data 1."));
+}
+
+// --------------------------------------------------
+// LOOP UTAMA
+// --------------------------------------------------
+void loop() {
+
+  // -----------------------------------------------
+  // LANGKAH 1: BACA DATA 1
+  // -----------------------------------------------
+  if (status == BACA_DATA1) {
+    if (!tombolDitekan()) {
+      return;
+    }
+
+    matikanLED();
+
+    Serial.println();
+    Serial.println(F("------------------------------------"));
+    Serial.println(F("Membaca Data 1..."));
+
+    data1Ohm = bacaData1();
+
+    if (data1Ohm <= 0) {
+      Serial.println(F("ERROR: Data 1 tidak valid."));
+      Serial.println(F("Periksa VR dan resistor referensi."));
+      Serial.println(F("Tekan tombol untuk mencoba lagi."));
+      return;
+    }
+
+    Serial.print(F("Data 1 - Resistansi total: "));
+    Serial.print(data1Ohm / 1000.0, 2);
+    Serial.println(F(" kOhm"));
+
+    Serial.println();
+    Serial.println(F("Putar VR ke posisi 90 derajat."));
+    Serial.println(F("Tekan tombol untuk membaca Data 2."));
+
+    status = BACA_DATA2;
+    return;
+  }
+
+  // -----------------------------------------------
+  // LANGKAH 2: BACA DATA 2
+  // -----------------------------------------------
+  if (status == BACA_DATA2) {
+    if (!tombolDitekan()) {
+      return;
+    }
+
+    Serial.println();
+    Serial.println(F("Membaca Data 2..."));
+
+    data2Ohm = bacaData2(data1Ohm);
+
+    if (data2Ohm < 0) {
+      Serial.println(F("ERROR: Data 2 tidak valid."));
+      Serial.println(F("Periksa sambungan A0, A1, dan GND."));
+      Serial.println(F("Tekan tombol untuk mencoba lagi."));
+      return;
+    }
+
+    rasio = data2Ohm / data1Ohm * 100.0;
+
+    Serial.print(F("Data 1: "));
+    Serial.print(data1Ohm / 1000.0, 2);
+    Serial.println(F(" kOhm"));
+
+    Serial.print(F("Data 2: "));
+    Serial.print(data2Ohm / 1000.0, 2);
+    Serial.println(F(" kOhm"));
+
+    Serial.print(F("Rasio: "));
+    Serial.print(rasio, 2);
+    Serial.println(F("%"));
+
+    Serial.println(F("------------------------------------"));
+
+    if (rasio <= BATAS_RATIO) {
+      digitalWrite(LED_NG, HIGH);
+      digitalWrite(LED_OK, LOW);
+
+      Serial.println(F("HASIL: NG"));
+      Serial.println(F("LED MERAH MENYALA"));
+    } else {
+      digitalWrite(LED_OK, HIGH);
+      digitalWrite(LED_NG, LOW);
+
+      Serial.println(F("HASIL: OK"));
+      Serial.println(F("LED HIJAU MENYALA"));
+    }
+
+    Serial.println(F("------------------------------------"));
+    Serial.println(F("Pergantian VR otomatis dalam 3 detik."));
+
+    waktuHasilSelesai = millis();
+    status = TAMPILKAN_HASIL;
+    return;
+  }
+
+  // -----------------------------------------------
+  // LANGKAH 3: PERGANTIAN VR OTOMATIS
+  // -----------------------------------------------
+  if (status == TAMPILKAN_HASIL) {
+    if (millis() - waktuHasilSelesai >= WAKTU_GANTI_VR) {
+      matikanLED();
+
+      Serial.println();
+      Serial.println(F("===================================="));
+      Serial.println(F("SIAP UNTUK VR BERIKUTNYA"));
+      Serial.println(F("Tekan tombol untuk membaca Data 1."));
+      Serial.println(F("===================================="));
+
+      status = BACA_DATA1;
+    }
+
+    return;
+  }
+}
