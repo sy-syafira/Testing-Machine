@@ -28,69 +28,211 @@
 const byte PIN_DATA1  = A1;
 const byte PIN_WIPER  = A0;
 const byte PIN_BUTTON = 5;
-const byte LED_OK     = 8;
-const byte LED_NG     = 9;
 
-const float R_REFERENSI = 10000.0;
+const byte LED_OK = 8;
+const byte LED_NG = 9;
+
+// Nilai aktual resistor referensi yang sudah diukur
+const float R_REFERENSI = 9850.0;  // ohm
+
+// Batas klasifikasi
 const float BATAS_RATIO = 28.0;
-const float VCC = 5.0;
+
+// ADC Arduino Nano 10-bit
 const float ADC_MAX = 1023.0;
 
+// Jumlah sampel ADC
 const byte JUMLAH_SAMPLE = 8;
 
-// Waktu pergantian VR setelah hasil keluar
+// Waktu menunggu penggantian VR
 const unsigned long WAKTU_GANTI_VR = 3000;
 
+// Status pengujian
 enum Status {
-  BACA_DATA1,
-  BACA_DATA2,
-  TAMPILKAN_HASIL
+  SIAP_DATA1,
+  SIAP_DATA2,
+  HASIL
 };
 
-Status status = BACA_DATA1;
+Status status = SIAP_DATA1;
 
-bool tombolSebelumnya = HIGH;
-bool statusTombolStabil = HIGH;
+float data1Ohm = 0.0;
+float data2Ohm = 0.0;
+float ratioPersen = 0.0;
+
+int adcA1Terakhir = 0;
+int adcA0Terakhir = 0;
+
+unsigned long waktuHasil = 0;
+
+// Debounce tombol
+int tombolTerakhir = HIGH;
+int tombolStabil = HIGH;
 unsigned long waktuDebounce = 0;
-unsigned long waktuHasilSelesai = 0;
 
-const unsigned long DEBOUNCE_MS = 25;
+const unsigned long DEBOUNCE_MS = 35;
 
-float data1Ohm = 0;
-float data2Ohm = 0;
-float rasio = 0;
 
 // --------------------------------------------------
-// BACA ADC DENGAN BEBERAPA SAMPEL
+// MEMBACA ADC DENGAN RATA-RATA SAMPEL
 // --------------------------------------------------
 int bacaADC(byte pin) {
-  analogRead(pin);  // Buang pembacaan pertama kanal
+  // Buang pembacaan pertama setelah pindah kanal ADC
+  analogRead(pin);
+  delayMicroseconds(300);
 
   unsigned long total = 0;
 
   for (byte i = 0; i < JUMLAH_SAMPLE; i++) {
     total += analogRead(pin);
+    delayMicroseconds(200);
   }
 
-  return (int)(total / JUMLAH_SAMPLE);
+  return (int)((total + JUMLAH_SAMPLE / 2) / JUMLAH_SAMPLE);
 }
 
-// --------------------------------------------------
-// DETEKSI TOMBOL DITEKAN
-// --------------------------------------------------
-bool tombolDitekan() {
-  bool pembacaan = digitalRead(PIN_BUTTON);
 
-  if (pembacaan != tombolSebelumnya) {
-    tombolSebelumnya = pembacaan;
-    waktuDebounce = millis();
+// --------------------------------------------------
+// MEMBACA DATA 1: RESISTANSI PIN 1-3
+//
+// Rangkaian:
+// 5V -> resistor referensi -> A1 dan pin 1 VR
+// pin 3 VR -> GND
+// --------------------------------------------------
+float bacaData1() {
+  int adcA1 = bacaADC(PIN_DATA1);
+
+  adcA1Terakhir = adcA1;
+
+  if (adcA1 <= 0 || adcA1 >= 1023) {
+    return -1.0;
   }
 
-  if (millis() - waktuDebounce >= DEBOUNCE_MS) {
-    if (pembacaan != statusTombolStabil) {
-      statusTombolStabil = pembacaan;
+  float resistansi =
+      R_REFERENSI * (float)adcA1 /
+      (ADC_MAX - (float)adcA1);
 
-      if (statusTombolStabil == LOW) {
+  return resistansi;
+}
+
+
+// --------------------------------------------------
+// MEMBACA DATA 2: RESISTANSI PIN 2-3
+//
+// A0 = wiper / pin tengah VR
+// A1 = titik pin 1 VR
+//
+// Rumus:
+// R2-3 = Rref * ADC_A0 / (1023 - ADC_A1)
+//
+// Berlaku untuk rangkaian pembagi tegangan di atas.
+// --------------------------------------------------
+float bacaData2() {
+  // Baca A1 dan A0 untuk memperoleh nilai terbaru
+  int adcA1 = bacaADC(PIN_DATA1);
+  int adcA0 = bacaADC(PIN_WIPER);
+
+  adcA1Terakhir = adcA1;
+  adcA0Terakhir = adcA0;
+
+  if (adcA1 < 0 || adcA1 >= 1023 ||
+      adcA0 < 0 || adcA0 > adcA1) {
+    return -1.0;
+  }
+
+  float resistansi =
+      R_REFERENSI * (float)adcA0 /
+      (ADC_MAX - (float)adcA1);
+
+  return resistansi;
+}
+
+
+// --------------------------------------------------
+// RESET KE KONDISI SIAP
+// --------------------------------------------------
+void resetPengujian() {
+  data1Ohm = 0.0;
+  data2Ohm = 0.0;
+  ratioPersen = 0.0;
+
+  digitalWrite(LED_OK, LOW);
+  digitalWrite(LED_NG, LOW);
+
+  status = SIAP_DATA1;
+
+  Serial.println();
+  Serial.println(F("--------------------------------"));
+  Serial.println(F("SIAP MENGUJI VR BERIKUTNYA"));
+  Serial.println(F("Pasang VR, lalu tekan tombol."));
+  Serial.println(F("Tekan tombol untuk DATA 1."));
+  Serial.println(F("--------------------------------"));
+}
+
+
+// --------------------------------------------------
+// CETAK HASIL
+// --------------------------------------------------
+void tampilkanHasil() {
+  Serial.println();
+  Serial.println(F("========== HASIL PENGUJIAN =========="));
+
+  Serial.print(F("ADC A1       : "));
+  Serial.println(adcA1Terakhir);
+
+  Serial.print(F("ADC A0       : "));
+  Serial.println(adcA0Terakhir);
+
+  Serial.print(F("Data 1       : "));
+  Serial.print(data1Ohm / 1000.0, 2);
+  Serial.println(F(" kOhm"));
+
+  Serial.print(F("Data 2       : "));
+  Serial.print(data2Ohm / 1000.0, 2);
+  Serial.println(F(" kOhm"));
+
+  Serial.print(F("Rasio Data 2 : "));
+  Serial.print(ratioPersen, 2);
+  Serial.println(F(" %"));
+
+  if (ratioPersen <= BATAS_RATIO) {
+    digitalWrite(LED_NG, HIGH);
+    digitalWrite(LED_OK, LOW);
+
+    Serial.println(F("HASIL        : NG"));
+    Serial.println(F("LED MERAH ON"));
+  } else {
+    digitalWrite(LED_OK, HIGH);
+    digitalWrite(LED_NG, LOW);
+
+    Serial.println(F("HASIL        : OK"));
+    Serial.println(F("LED HIJAU ON"));
+  }
+
+  Serial.println(F("Hasil tampil selama 3 detik."));
+  Serial.println(F("====================================="));
+
+  waktuHasil = millis();
+  status = HASIL;
+}
+
+
+// --------------------------------------------------
+// MEMBACA TEKANAN TOMBOL DENGAN DEBOUNCE
+// --------------------------------------------------
+bool tombolDitekan() {
+  int pembacaan = digitalRead(PIN_BUTTON);
+
+  if (pembacaan != tombolTerakhir) {
+    waktuDebounce = millis();
+    tombolTerakhir = pembacaan;
+  }
+
+  if ((millis() - waktuDebounce) > DEBOUNCE_MS) {
+    if (pembacaan != tombolStabil) {
+      tombolStabil = pembacaan;
+
+      if (tombolStabil == LOW) {
         return true;
       }
     }
@@ -99,190 +241,101 @@ bool tombolDitekan() {
   return false;
 }
 
-// --------------------------------------------------
-// MATIKAN LED
-// --------------------------------------------------
-void matikanLED() {
-  digitalWrite(LED_OK, LOW);
-  digitalWrite(LED_NG, LOW);
-}
-
-// --------------------------------------------------
-// DATA 1: RESISTANSI TOTAL VR
-//
-// 5V -- R referensi -- A1 -- VR -- GND
-//
-// R_VR = R_REF * V_A1 / (VCC - V_A1)
-// --------------------------------------------------
-float bacaData1() {
-  int adc = bacaADC(PIN_DATA1);
-  float tegangan = adc * VCC / ADC_MAX;
-
-  if (tegangan <= 0.01 || tegangan >= VCC - 0.01) {
-    return -1.0;
-  }
-
-  return R_REFERENSI * tegangan / (VCC - tegangan);
-}
-
-// --------------------------------------------------
-// DATA 2: ESTIMASI RESISTANSI WIPER KE GND
-//
-// Mengasumsikan VR dipasang sebagai pembagi tegangan
-// dengan lintasan resistif dari A1 menuju GND.
-// --------------------------------------------------
-float bacaData2(float resistansiTotal) {
-  int adcTotal = bacaADC(PIN_DATA1);
-  int adcWiper = bacaADC(PIN_WIPER);
-
-  if (adcTotal <= 0) {
-    return -1.0;
-  }
-
-  float rasioTegangan =
-      (float)adcWiper / (float)adcTotal;
-
-  if (rasioTegangan < 0.0 || rasioTegangan > 1.05) {
-    return -1.0;
-  }
-
-  return resistansiTotal * rasioTegangan;
-}
 
 // --------------------------------------------------
 // SETUP
 // --------------------------------------------------
 void setup() {
   pinMode(PIN_BUTTON, INPUT_PULLUP);
+
   pinMode(LED_OK, OUTPUT);
   pinMode(LED_NG, OUTPUT);
 
-  matikanLED();
+  digitalWrite(LED_OK, LOW);
+  digitalWrite(LED_NG, LOW);
 
   Serial.begin(9600);
 
-  Serial.println();
-  Serial.println(F("===================================="));
-  Serial.println(F("       JIG SORTING VR 100K"));
-  Serial.println(F("===================================="));
-  Serial.println(F("Pasang VR pada jig."));
-  Serial.println(F("Tekan tombol untuk membaca Data 1."));
+  delay(500);
+
+  Serial.println(F("JIG PENGUKURAN VR"));
+  Serial.println(F("Arduino Nano"));
+  Serial.println(F("Resistor referensi: 9.85 kOhm"));
+  Serial.println(F("Batas NG: rasio <= 28%"));
+  Serial.println(F("Batas OK: rasio > 28%"));
+
+  resetPengujian();
 }
+
 
 // --------------------------------------------------
 // LOOP UTAMA
 // --------------------------------------------------
 void loop() {
-
-  // -----------------------------------------------
-  // LANGKAH 1: BACA DATA 1
-  // -----------------------------------------------
-  if (status == BACA_DATA1) {
-    if (!tombolDitekan()) {
-      return;
+  // Jika hasil sudah ditampilkan selama 3 detik,
+  // otomatis bersiap menguji VR berikutnya.
+  if (status == HASIL) {
+    if (millis() - waktuHasil >= WAKTU_GANTI_VR) {
+      resetPengujian();
     }
+    return;
+  }
 
-    matikanLED();
+  if (!tombolDitekan()) {
+    return;
+  }
 
+  // ----------------------------------------------
+  // TAHAP 1: DATA 1
+  // ----------------------------------------------
+  if (status == SIAP_DATA1) {
     Serial.println();
-    Serial.println(F("------------------------------------"));
-    Serial.println(F("Membaca Data 1..."));
+    Serial.println(F("Membaca DATA 1..."));
 
     data1Ohm = bacaData1();
 
-    if (data1Ohm <= 0) {
-      Serial.println(F("ERROR: Data 1 tidak valid."));
-      Serial.println(F("Periksa VR dan resistor referensi."));
-      Serial.println(F("Tekan tombol untuk mencoba lagi."));
+    if (data1Ohm <= 0.0) {
+      Serial.println(F("ERROR: ADC A1 tidak valid."));
+      Serial.println(F("Periksa wiring dan posisi VR."));
       return;
     }
 
-    Serial.print(F("Data 1 - Resistansi total: "));
+    Serial.print(F("ADC A1       : "));
+    Serial.println(adcA1Terakhir);
+
+    Serial.print(F("DATA 1       : "));
     Serial.print(data1Ohm / 1000.0, 2);
     Serial.println(F(" kOhm"));
 
-    Serial.println();
     Serial.println(F("Putar VR ke posisi 90 derajat."));
-    Serial.println(F("Tekan tombol untuk membaca Data 2."));
+    Serial.println(F("Tekan tombol untuk membaca DATA 2."));
 
-    status = BACA_DATA2;
-    return;
+    status = SIAP_DATA2;
   }
 
-  // -----------------------------------------------
-  // LANGKAH 2: BACA DATA 2
-  // -----------------------------------------------
-  if (status == BACA_DATA2) {
-    if (!tombolDitekan()) {
-      return;
-    }
-
+  // ----------------------------------------------
+  // TAHAP 2: DATA 2 DAN HASIL
+  // ----------------------------------------------
+  else if (status == SIAP_DATA2) {
     Serial.println();
-    Serial.println(F("Membaca Data 2..."));
+    Serial.println(F("Membaca DATA 2..."));
 
-    data2Ohm = bacaData2(data1Ohm);
+    data2Ohm = bacaData2();
 
-    if (data2Ohm < 0) {
-      Serial.println(F("ERROR: Data 2 tidak valid."));
-      Serial.println(F("Periksa sambungan A0, A1, dan GND."));
-      Serial.println(F("Tekan tombol untuk mencoba lagi."));
+    if (data2Ohm < 0.0) {
+      Serial.println(F("ERROR: pembacaan ADC tidak valid."));
+      Serial.println(F("Periksa wiring A0, A1, dan GND."));
       return;
     }
 
-    rasio = data2Ohm / data1Ohm * 100.0;
-
-    Serial.print(F("Data 1: "));
-    Serial.print(data1Ohm / 1000.0, 2);
-    Serial.println(F(" kOhm"));
-
-    Serial.print(F("Data 2: "));
-    Serial.print(data2Ohm / 1000.0, 2);
-    Serial.println(F(" kOhm"));
-
-    Serial.print(F("Rasio: "));
-    Serial.print(rasio, 2);
-    Serial.println(F("%"));
-
-    Serial.println(F("------------------------------------"));
-
-    if (rasio <= BATAS_RATIO) {
-      digitalWrite(LED_NG, HIGH);
-      digitalWrite(LED_OK, LOW);
-
-      Serial.println(F("HASIL: NG"));
-      Serial.println(F("LED MERAH MENYALA"));
-    } else {
-      digitalWrite(LED_OK, HIGH);
-      digitalWrite(LED_NG, LOW);
-
-      Serial.println(F("HASIL: OK"));
-      Serial.println(F("LED HIJAU MENYALA"));
+    if (data1Ohm <= 0.0) {
+      Serial.println(F("ERROR: DATA 1 tidak valid."));
+      resetPengujian();
+      return;
     }
 
-    Serial.println(F("------------------------------------"));
-    Serial.println(F("Pergantian VR otomatis dalam 3 detik."));
+    ratioPersen = (data2Ohm / data1Ohm) * 100.0;
 
-    waktuHasilSelesai = millis();
-    status = TAMPILKAN_HASIL;
-    return;
-  }
-
-  // -----------------------------------------------
-  // LANGKAH 3: PERGANTIAN VR OTOMATIS
-  // -----------------------------------------------
-  if (status == TAMPILKAN_HASIL) {
-    if (millis() - waktuHasilSelesai >= WAKTU_GANTI_VR) {
-      matikanLED();
-
-      Serial.println();
-      Serial.println(F("===================================="));
-      Serial.println(F("SIAP UNTUK VR BERIKUTNYA"));
-      Serial.println(F("Tekan tombol untuk membaca Data 1."));
-      Serial.println(F("===================================="));
-
-      status = BACA_DATA1;
-    }
-
-    return;
+    tampilkanHasil();
   }
 }
